@@ -1,0 +1,71 @@
+image: node:14-alpine
+
+# Cache modules in between jobs per-branch
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - server/node_modules/
+
+stages:
+  - build
+  - test
+  - publish
+  - deploy
+
+build:
+  stage: build
+  tags:
+    - docker
+  script:
+    - cd server
+    - npm install
+
+test:
+  stage: test
+  tags:
+    - docker
+  services:
+    - name: mvertes/alpine-mongo:latest
+      alias: mongo
+  variables:
+    MONGODB_URI: "mongodb://mongo:27017/serverTestDB"
+    JWT_SECRET: "jwt-secret-for-tests" 
+  script:
+    - cd server
+    - npm run ci-test
+
+publish:
+  image: docker:latest
+  stage: publish
+  tags:
+    - docker-build
+  services:
+    - name: docker:dind
+  script: 
+    - docker build . -t guwebgroup8/gocargo
+    - docker login -u guwebgroup8 -p $DOCKER_PASSWORD
+    - docker push guwebgroup8/gocargo
+  environment:
+    name: production
+  only:
+    refs:
+      - master
+
+deploy:
+  stage: deploy
+  tags:
+    - docker
+  image: alpine:latest
+  script:
+    - chmod og= $ID_RSA
+    - apk update && apk add openssh-client
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker login -u guwebgroup8 -p $DOCKER_PASSWORD"
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker pull guwebgroup8/gocargo:latest"
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker container rm -f gocargo || true"
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker run -d --network gocargo-network -p 127.0.0.1:3000:3000 --env-file /root/gocargo/.env --restart unless-stopped --name gocargo $DOCKER_USERNAME/gocargo" 
+  environment:
+    name: production
+    url: https://gocargo.jnsl.tk
+  only:
+    refs:
+      - master
